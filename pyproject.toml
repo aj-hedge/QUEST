@@ -1,0 +1,37 @@
+[build-system]
+requires = ["hatchling >= 1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "quest_aj-hedge"
+version = "2025.0.1"
+authors = [
+  { name="A. J. Hedge", email="aj.hedge@icrar.org" },
+]
+description = "Utilities for scripting or notebooks that are designed to provide a simple interface to query and retrieve astronomical survey data, index alongside local data and perform basic aperture photometry on the "best" (deepest/high-res) data at multiple wavelengths."
+readme = "README.md"
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3.10",
+    "Operating System :: OS Independent",
+    "Development Status :: 3 - Alpha",
+]
+license = "GPL-3.0-or-later"
+license-files = ["LICEN[CS]E*"]
+dependencies = [
+  "numpy<2.0,>=1.25",
+  "matplotlib>=3.7",
+  "astropy>=6.1.7",
+  "photutils>=1.6.0",
+  "astroquery>=0.4.10"
+  "pyvo>=1.6.1",
+  "requests>=2.25.1",
+  "scipy>=1.14.1",
+  "reproject>=0.14.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/aj-hedge/QUEST"
+Repository = "https://github.com/aj-hedge/QUEST.git"
+Changelog = "https://github.com/aj-hedge/QUEST/blob/main/CHANGELOG.md"
+Issues = "https://github.com/aj-hedge/QUEST/issues"

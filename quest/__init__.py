@@ -1,0 +1,1 @@
+__spec__.submodule_search_locations__ = ['./']
