@@ -213,12 +213,12 @@ def generate_realigned_hdu(original_hdu: fits.ImageHDU, center_coord: SkyCoord) 
     return realigned_hdu
 
 def get_mean_local_bkg(data: np.ndarray, wcs: WCS, coords: SkyCoord,
-                    annu_in: u.Quantity, annu_out: u.Quantity) -> np.ndarray:
+                    annu_in: u.Quantity, annu_out: u.Quantity, bkg_sigma_clip: float=3) -> np.ndarray:
     '''
     Get the mean local background value within annuli extending from `annu_in` to `annu_out` at positions `coords`.
     '''
     annuli = photutils.aperture.SkyCircularAnnulus(coords,annu_in,annu_out)
-    sigma_clipper = SigmaClip(sigma=3,maxiters=10)
+    sigma_clipper = SigmaClip(sigma=bkg_sigma_clip,maxiters=10)
     annuli_stats = photutils.aperture.ApertureStats(data,annuli,wcs=wcs,sigma_clip=sigma_clipper)
     bkg_means = annuli_stats.mean
     return np.atleast_1d(bkg_means) # ensure we can index/loop through the result even if it is for one coord
@@ -683,9 +683,15 @@ def convert_flux(flux_sum: np.ndarray, astronomy_method: str, hdul: fits.HDUList
             match origin:
                 # NOTE/TODO: Requires verifying: 2MASS, unWISE, AllWISE, VIDEO, SHARKS, UHS, VHS, LAS and new additions
                 case o if o in known_origins:
+                    if o == 'SHARKS':
+                        # Double check if this SHARKS data has been manually calibrated in lieu of fix_SHARKS
+                        if get_hdu_with(hdul,'USEABZP'):
+                            pass
+                        else:
+                            raise NotImplementedError("SHARKS data requires manual calibration; no automatic conversion available.")
                     flux_out = origin_conversions[o](flux_sum=flux_sum, ap_corr=ap_corr, im_hdu=im_hdu,
                                                         band=band, pixscale=pixscale)
-                case 'SHARKS' | 'VIDEO' | 'UltraVISTA' | 'DXS' | 'UDS':   # ************************TODO************************
+                case 'VIDEO' | 'UltraVISTA' | 'DXS' | 'UDS':   # ************************TODO************************
                     raise NotImplementedError(f"Photometric flux conversion for ORIGIN={origin} not yet implemented.")
                 case _:
                     print(f'[INFO]\tNo preset conversion for ORIGIN={origin}, attempting auto conversion...')
@@ -723,7 +729,7 @@ def convert_flux(flux_sum: np.ndarray, astronomy_method: str, hdul: fits.HDUList
 # Since this config is accessible via the QueryTool class, it can be updated with custom survey definitions as needed, simply
 # linking to custom get_<survey> and fix_<survey> functions which can be imported from a library or defined in a script/notebook.
 default_known_origins = ['2MASS', 'unWISE', 'AllWISE', 'EuclidMER', 'HSC', 'DECaLS', 'DES', 'HAWK-I', \
-                        'UHS', 'VHS', 'LAS', 'VIKING', 'SEIP', 'Spitzer']
+                        'UHS', 'VHS', 'LAS', 'VIKING', 'SEIP', 'Spitzer', 'SHARKS']
 
 # TEMPLATE CONVERSION FUNCTION
 # def _convert_<usecase>(flux_sum=flux_sum, ap_corr=ap_corr, im_hdu=im_hdu,
@@ -741,14 +747,17 @@ default_conversions = {
     '2MASS': _convert_useabzp,
     'unWISE': _convert_useabzp,
     'AllWISE': _convert_useabzp,
-    'EuclidMER': _convert_useabzp,
+    'Euclid': _convert_useabzp,
     'HSC': _convert_useabzp,
     'DECaLS': _convert_useabzp,
     'DES': _convert_useabzp,
+    'DECam': _convert_useabzp,
+    'HAWK-I': _convert_useabzp,
     'UHS': _convert_useabzp,
     'VHS': _convert_useabzp,
     'LAS': _convert_useabzp,
     'VIKING': _convert_useabzp,
     'SEIP': _convert_MJy_per_steradian,
-    'Spitzer': _convert_MJy_per_steradian
+    'Spitzer': _convert_MJy_per_steradian,
+    'SHARKS': _convert_useabzp
 }
