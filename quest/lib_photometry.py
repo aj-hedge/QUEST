@@ -28,31 +28,40 @@ class PhotometryTool:
         self.output_fig_dir = output_fig_dir
 
     def perform_photometry(self, ap_diameter: u.Quantity=2*u.arcsec, n_rand_aps: int=1000, ap_max_dist: u.Quantity=60*u.arcsec,
-                           keep_negative: bool=True, rand_aper_flux_sigma_clip: float=10, debug: bool=False):
+                           keep_negative: bool=True, rand_aper_flux_sigma_clip: float=10,
+                           bkg_sigma_clip: float=3, debug: bool=False):
         print(f"--- Performing photometry for {self.source.source_name} ---")
         for band, data_entry in self.source.best_data.items():
             try:
                 hdul = fits.open(data_entry.filepath)
-                
                 im_hdu = get_image_hdu(hdul)
                 if not im_hdu: continue
 
-                wcs = WCS(im_hdu.header, naxis=2)
                 astronomy_method = get_astronomy_method(hdul)
                 wl = get_wavelength(hdul)
 
-                flux, local_bkg = self.get_phot(im_hdu.data, wcs, self.source.host_coord, ap_diameter)
-                flux_jy = convert_flux(flux, astronomy_method, hdul, ap_diameter, band=band,
-                                       ap_corrections=data_entry.aperture_corrections)
-                # Clip the random aperture fluxes at 10-sigma to safeguard against clipping mildly strong artefacts/spurious pixels
-                # which would then lower the uncertainty estimate unreasonably.
-                flux_std, flux_bkg = self.rand_apertures(im_hdu.data, hdul, wcs, [self.source.host_coord], n_rand_aps,
-                                                  ap_max_dist, ap_diameter, sigma_clipping=rand_aper_flux_sigma_clip,
-                                                  debug=debug, debug_figure_dir=self.output_fig_dir)#, self.get_zp(hdul, band=band))
-                flux_err_jy = convert_flux(flux_std, astronomy_method, hdul, ap_diameter, band=band,
-                                       ap_corrections=data_entry.aperture_corrections)
-                # flux_bkg = convert_flux(flux_bkg, astronomy_method, hdul, ap_diameter, band=band,
-                #                       ap_corrections=data_entry.aperture_corrections)
+                flux_jy, flux_err_jy = self._extract_flux(ap_diameter, hdul, im_hdu, band=band, astronomy_method=astronomy_method,
+                                                          ap_corrections=data_entry.aperture_corrections,
+                                                          n_rand_aps=n_rand_aps, ap_max_dist=ap_max_dist,
+                                                          rand_aper_flux_sigma_clip=rand_aper_flux_sigma_clip,
+                                                          bkg_sigma_clip=bkg_sigma_clip, debug=debug)
+
+                # wcs = WCS(im_hdu.header, naxis=2)
+
+                # flux, local_bkg = self.get_phot(im_hdu.data, wcs, self.source.host_coord, ap_diameter)
+                # flux_jy = convert_flux(flux, astronomy_method, hdul, ap_diameter, band=band,
+                #                        ap_corrections=data_entry.aperture_corrections)
+                # # Clip the random aperture fluxes at X-sigma to safeguard against clipping mildly strong artefacts/spurious pixels
+                # # which would then lower the uncertainty estimate unreasonably.
+                # flux_std, flux_bkg = self.rand_apertures(im_hdu.data, hdul, wcs, [self.source.host_coord], n_rand_aps,
+                #                                   ap_max_dist, ap_diameter, sigma_clipping=rand_aper_flux_sigma_clip,
+                #                                   debug=debug, debug_figure_dir=self.output_fig_dir)#, self.get_zp(hdul, band=band))
+                # flux_err_jy = convert_flux(flux_std, astronomy_method, hdul, ap_diameter, band=band,
+                #                        ap_corrections=data_entry.aperture_corrections)
+                # # flux_bkg = convert_flux(flux_bkg, astronomy_method, hdul, ap_diameter, band=band,
+                # #                       ap_corrections=data_entry.aperture_corrections)
+
+                # TODO: Add 5% flux_jy in quadrature to flux_err_jy (statistical aperture uncertainty) to get final error
 
                 if flux_jy + flux_err_jy < 0 and not keep_negative:
                     hdul.close()
@@ -79,6 +88,32 @@ class PhotometryTool:
             except Exception as e:
                 print(f"[ERROR]\tperform_photometry: Could not perform photometry on {data_entry.filepath}: {e}")
         print("-" * 30)
+
+    def _extract_flux(self, ap_diameter: u.Quantity=2*u.arcsec, hdul: fits.HDUList=None, im_hdu: fits.ImageHDU=None,
+                      band: str='', astronomy_method: str=None, ap_corrections: np.ndarray=None,
+                      n_rand_aps: int=1000, ap_max_dist: u.Quantity=60*u.arcsec,
+                      rand_aper_flux_sigma_clip: float=10, bkg_sigma_clip: float=3, debug: bool=False):
+        '''
+        
+        '''
+        wcs = WCS(im_hdu.header, naxis=2)
+
+        flux, local_bkg = self.get_phot(im_hdu.data, wcs, self.source.host_coord, ap_diameter,
+                                        bkg_sigma_clip=bkg_sigma_clip)
+        flux_jy = convert_flux(flux, astronomy_method, hdul, ap_diameter, band=band,
+                                ap_corrections=ap_corrections)
+        # Clip the random aperture fluxes at X-sigma to safeguard against clipping mildly strong artefacts/spurious pixels
+        # which would then lower the uncertainty estimate unreasonably.
+        flux_std, flux_bkg = self.rand_apertures(im_hdu.data, hdul, wcs, [self.source.host_coord], n_rand_aps,
+                                            ap_max_dist, ap_diameter, sigma_clipping=rand_aper_flux_sigma_clip,
+                                            bkg_sigma_clip=bkg_sigma_clip,
+                                            debug=debug, debug_figure_dir=self.output_fig_dir)#, self.get_zp(hdul, band=band))
+        flux_err_jy = convert_flux(flux_std, astronomy_method, hdul, ap_diameter, band=band,
+                                ap_corrections=ap_corrections)
+        # flux_bkg = convert_flux(flux_bkg, astronomy_method, hdul, ap_diameter, band=band,
+        #                       ap_corrections=ap_corrections)
+
+        return flux_jy, flux_err_jy
 
     def print_photometry(self, out_type: str='str', out_file: str=None):
         '''
@@ -295,7 +330,8 @@ class PhotometryTool:
     @staticmethod
     def rand_apertures(data: np.ndarray, hdul: fits.HDUList, wcs: WCS, coords: SkyCoord,
                     npos: int, rand_dist: u.Quantity, ap_diameter: u.Quantity,
-                    sigma_clipping: int=5, debug: bool=False, debug_figure_dir: str='./figures') -> tuple[np.ndarray,np.ndarray]:
+                    sigma_clipping: int=5, bkg_sigma_clip: float=3,
+                    debug: bool=False, debug_figure_dir: str='./figures') -> tuple[np.ndarray,np.ndarray]:
         '''
         Place down random apertures (annuli) relative to target coordinates to sample the statistical
         mean and standard deviation of fluxes (background).
@@ -317,9 +353,11 @@ class PhotometryTool:
                     hdu = generate_realigned_hdu(hdu, coord)
                 wcs = WCS(hdu.header, naxis=2)
                 cutout = nddata_utils.Cutout2D(hdu.data, coord, rand_dist*2+ap_diameter, wcs)
-                rand_flux, rand_bkg, apertures = PhotometryTool.get_phot(cutout.data,cutout.wcs,n_coords,ap_diameter,debug=debug)
+                rand_flux, rand_bkg, apertures = PhotometryTool.get_phot(cutout.data,cutout.wcs,n_coords,ap_diameter,
+                                                                         bkg_sigma_clip=bkg_sigma_clip,debug=debug)
             else:
-                rand_flux, rand_bkg = PhotometryTool.get_phot(data,wcs,n_coords,ap_diameter,debug=debug)
+                rand_flux, rand_bkg = PhotometryTool.get_phot(data,wcs,n_coords,ap_diameter,
+                                                              bkg_sigma_clip=bkg_sigma_clip,debug=debug)
 
             flux_clipped: np.ma.MaskedArray = sigma_clip(rand_flux,sigma=sigma_clipping,maxiters=10)
 
@@ -341,14 +379,14 @@ class PhotometryTool:
                 ax.set_title(f"{origin} {band}: {npos} random apertures within {rand_dist},\nclipped at {sigma_clipping} sigma")
                 plt.savefig(f"{debug_figure_dir}/debug_randapertures_{coord.to_string(style='hmsdms')}_{origin}_{band}_{rand_dist}.png")
                 ax.remove()
-            # add 10% to flux uncertainty (equivalent to 0.1 mag)
-            flux_std.append(np.std(flux_clipped,ddof=1) * 1.1)
+            flux_std.append(np.std(flux_clipped,ddof=1))
             bkg_mean.append(np.mean(rand_bkg))
 
         return u.Quantity(flux_std), u.Quantity(bkg_mean)
 
     @staticmethod
-    def get_phot(data: np.ndarray, wcs: WCS, coords: SkyCoord, ap_diameter: u.Quantity, debug: bool=False) -> tuple[float,float]:
+    def get_phot(data: np.ndarray, wcs: WCS, coords: SkyCoord, ap_diameter: u.Quantity,
+                 bkg_sigma_clip: float=3, debug: bool=False) -> tuple[float,float]:
         '''
         Extract the apertue flux and annulus background for given coordinates,
         subtracting the local background from the aperture flux. (NOTE: No flux conversion here)
@@ -357,7 +395,8 @@ class PhotometryTool:
         ap = photutils.aperture.SkyCircularAperture(coords,r=ap_diameter/2)
         pix_ap = ap.to_pixel(wcs)
         phot_table = photutils.aperture.aperture_photometry(data,pix_ap)
-        local_bkg = get_mean_local_bkg(data,wcs,coords,1/2*ap_diameter,3/2*ap_diameter)
+        local_bkg = get_mean_local_bkg(data,wcs,coords,1/2*ap_diameter,5/2*ap_diameter,
+                                       bkg_sigma_clip=bkg_sigma_clip)
         flux = phot_table['aperture_sum'] - pix_ap.area*local_bkg
         if debug:
             return flux, local_bkg, pix_ap

@@ -12,6 +12,7 @@ from astropy.table import Table
 from astropy.visualization import wcsaxes as wcsaxes
 import glob, os, io, shutil, gzip
 import pyvo as vo
+from astroquery import hips2fits
 from astroquery.casda import Casda      # CSIRO ASKAP Science Data Archive (e.g. RACS, EMU)
 from astroquery.eso import Eso          # European Southern Observatory (e.g. VLT survey products)
 from astroquery.cadc import Cadc        # Canadian Astronomy Data Centre (Large variety including radio)
@@ -717,7 +718,7 @@ def fix_Euclid_MER(filepath: str, coord: SkyCoord=None):
         ext_corr = 0
 
     update_header(filepath, 'WAVELEN', wl, 'image', clobber=False)
-    update_header(filepath, 'ORIGIN', fits.open(filepath)[0].header['INSTRUME'], 'parimary', clobber=True)
+    update_header(filepath, 'ORIGIN', fits.open(filepath)[0].header['INSTRUME'], 'primary', clobber=True)
     update_header(filepath, 'USEABZP', fits.open(filepath)[0].header['MAGZERO'] - ext_corr, 'image', clobber=True)
     update_header(filepath, 'BAND', band, 'primary', clobber=True)
 
@@ -1344,8 +1345,59 @@ def get_EMU(data_dir: str, coord: SkyCoord, username: str, band: str='888MHz', q
             os.remove(f)
 
 def get_TGSS():
+    '''
+    TODO
+    https://hips.astron.nl/ASTRON/P/tgssadr
+    '''
     raise NotImplementedError
 
+def get_LoTSS(data_dir: str, coord: SkyCoord, query_radius: u.Quantity=3*u.arcmin,
+              cutout_size: u.Quantity=180*u.arcsec, low: bool=False):
+    '''
+    See https://lofar-surveys.org/cutout_api_details.html
+    adapted from
+    https://github.com/mhardcastle/lotss-cutout-api/blob/main/cutout.py
+    Alternatively, the worse(?) HiPS: https://hips.astron.nl/ASTRON/P/lotss_dr2_high could be
+    used with astroquery.hips2fits to get cutouts.
+    '''
+    # Martin Hardcastle's cutout code
+    base = 'dr2'
+    url = 'https://lofar-surveys.org/'
+    if low:
+        page = base + '-low-cutout.fits'
+    else:
+        page = base + '-cutout.fits'
+
+    if not os.path.exists(f'{data_dir}/Radio/LoTSS'): os.mkdir(f'{data_dir}/Radio/LoTSS')
+    outname = f"{data_dir}/Radio/LoTSS/{coord.to_string(style='hmsdms', precision=2).replace(' ','')}_" \
+                + f"{'low_' if low else ''}LoTSS_{cutout_size.value}{cutout_size.unit}_cutout.fits"
+
+    r = requests.get(url + page, params={'pos': coord.to_string(style='hmsdms', precision=5, sep=':'),
+                                       'size': cutout_size.to(u.arcmin).value}, stream=True)
+    if r.status_code != 200:
+        raise RuntimeError('Status code %i returned' % r.status_code)
+    if r.headers['content-type'] != 'application/fits':
+        raise RuntimeError('Server did not return FITS file, probably no coverage of this area')
+
+    with open(outname,'wb') as f:
+        f.write(r.content)
+        r.close()
+
+def get_LoLSS(coord: SkyCoord, cutout_size: u.Quantity=180*u.arcsec):
+    '''
+    HiPS previewer of DR1 available at https://lofar-surveys.org/public_hips/lolss
+    Try to use astroquery.hips2fits to get cutouts? LoLSS HiPS is not in the default hips2fits list at CDS...
+    '''
+    raise NotImplementedError
+
+    # Example
+    hips_url = "https://lofar-surveys.org/public_hips/lolss"
+
+    # Generate the FITS cutout (returns the FITS data directly)
+    fits_data = hips2fits.query(hips_url, ra=coord.ra, dec=coord.dec, fov=cutout_size, format='fits')
+
+    # Save the FITS data to a file (using astropy, if needed)
+    fits.writeto('m101_cutout.fits', fits_data[0].data, fits_data[0].header)
 
 
 
@@ -1393,7 +1445,7 @@ default_online_archive_config = {
         'download_function': get_SEIP,
         'apply_fixes_function': fix_SEIP
     },
-    'Euclid_MER':
+    'EuclidMER':
     {
         'survey_name': 'Euclid Q1 MER mosaics',
         'available_bands': ['U','G','R','I','Z','VIS','Y','J','H'],
@@ -1484,6 +1536,20 @@ default_online_archive_config = {
     'RACS-high':
     {
 
+    },
+    'LoTSS':
+    {
+        'survey_name': 'LOFAR Two-metre Sky Survey',
+        'available_bands': ['144MHz'],
+        'how_to_cite': '',
+        'download_function': get_LoTSS,
+    },
+    'LoLSS':
+    {
+        'survey_name': 'LOFAR LBA Sky Survey',
+        'available_bands': ['54MHz'],
+        'how_to_cite': '',
+        'download_function': get_LoLSS,
     }
 }
 

@@ -87,7 +87,7 @@ def plot_overlays(phot_tool: PhotometryTool, save_path: str=None, stamp_radius: 
                                                       bands=ir_bands,
                                                       cutout_size=stamp_radius*3,
                                                       ignore_negative=ignore_negative)
-    
+
     if optical_hdus:
         _generate_stack_and_plot(se=phot_tool.source, hdus=optical_hdus, stack_name=available_optical_bands,
                                  title_prefix="Optical", save_path=save_path, cutout_size=stamp_radius*2,
@@ -150,46 +150,66 @@ def _generate_stack_and_plot(se: SourceEntry, hdus: list[fits.ImageHDU], stack_n
     handles, labels = ax.get_legend_handles_labels()
     
     if len(data_dir_radio) > 1:
-        radio_paths = []
+        radio_paths = set()
         for radio_dir in data_dir_radio:
-            radio_paths.extend(glob.glob(f'{radio_dir}/**/*.fits'))
+            radio_paths.update(glob.glob(f'{radio_dir}/*.fits'))
+            radio_paths.update(glob.glob(f'{radio_dir}/**/*.fits'))
     elif len(data_dir_radio) == 1:
-        radio_paths = glob.glob(f'{data_dir_radio[0]}/**/*.fits')
+        radio_paths = set()
+        radio_paths.update(glob.glob(f'{data_dir_radio[0]}/*.fits'))
+        radio_paths.update(glob.glob(f'{data_dir_radio[0]}/**/*.fits'))
     else:
-        radio_paths = []
+        radio_paths = set()
     radio_cutout = None
-    
+
     for radio_path in radio_paths:
         if not any([fp in radio_path for fp in ignored_filepaths]):
-            if skycoord_in_image(radio_path, se.host_coord):
-                with fits.open(radio_path) as radio_hdul:
-                    radio_hdu = get_image_hdu(radio_hdul)
-                    if not validate_image(radio_hdu):
-                        continue
-                    instrument = get_instrument(radio_hdul)
-                    # If the radio image does not have good enough beam resolution relative to the stamp size, continue
-                    bmaj = radio_hdu.header.get('BMAJ')
-                    bmin = radio_hdu.header.get('BMIN')
-                    if not bmaj or not bmin:
-                        continue
-                    if max(bmaj, bmin) > cutout_size.to(u.deg).value / 4:
-                        continue
-                    radio_wcs = WCS(radio_hdu.header, naxis=2)
-                    radio_cutout = nddata_utils.Cutout2D(np.squeeze(radio_hdu.data), se.host_coord, cutout_size, wcs=radio_wcs)
-                    mask = ~np.isnan(radio_cutout.data)
-                    if np.all(mask == False):
-                        continue
-                    rms = np.sqrt(np.nanmean(sigma_clip(radio_cutout.data[~np.isnan(radio_cutout.data)], sigma=3, maxiters=10)**2))
-                    levels = rms * 3 * kwargs.get('contour_step', np.sqrt(2))**np.arange(0, 3, 1)
-                    contour_colour = next(contour_colour_iter)
-                    ax.contour(radio_cutout.data, levels=levels, transform=ax.get_transform(radio_cutout.wcs),
-                                colors=contour_colour, alpha=0.6)
-                    if kwargs.get('add_beam', False) == True:
-                        wcsaxes.add_beam(ax,header=radio_hdu.header,corner=next(beam_pos_iter),frame=False,
-                                            edgecolor=contour_colour,hatch='////',fill=True,facecolor='white')
-                    if radio_cutout:    # QuadContourSet (from ax.contour call) does not support labels directly
-                        handles.append(patches.Patch(color=contour_colour,label=f"{instrument}"))
-    
+            try:
+                if skycoord_in_image(radio_path, se.host_coord):
+                    with fits.open(radio_path) as radio_hdul:
+                        if not validate_image(get_image_hdu(radio_hdul), min_fill_factor=0.2):
+                            print(f'[DEBUG] {radio_path} could not be validated.')
+                            continue
+                else:
+                    continue
+            except Exception as e:
+                print(f"Warning: Could not process radio image {radio_path} for overlays: {e}")
+                continue
+
+            radio_hdul = fits.open(radio_path)
+            radio_hdu = get_image_hdu(radio_hdul)
+            instrument = get_instrument(radio_hdul)
+            # If the radio image does not have good enough beam resolution relative to the stamp size, continue
+            bmaj = radio_hdu.header.get('BMAJ')
+            bmin = radio_hdu.header.get('BMIN')
+            if not bmaj or not bmin:
+                continue
+            if max(bmaj, bmin) > cutout_size.to(u.deg).value / 4:
+                continue
+            radio_wcs = WCS(radio_hdu.header, naxis=2)
+            # Ensure we deal with stokes I images, take first element of last axis
+            radio_data = radio_hdu.data
+            if radio_data.ndim > 2:
+                radio_data = radio_data[0,...]
+            # No support for cubes yet, so hopefully taking the first element of the frequency axis is OK
+            if radio_data.ndim > 2:
+                radio_data = radio_data[0,...]
+
+            radio_cutout = nddata_utils.Cutout2D(np.squeeze(radio_data), se.host_coord, cutout_size, wcs=radio_wcs)
+            mask = ~np.isnan(radio_cutout.data)
+            if np.all(mask == False):
+                continue
+            rms = np.sqrt(np.nanmean(sigma_clip(radio_cutout.data[~np.isnan(radio_cutout.data)], sigma=3, maxiters=10)**2))
+            levels = rms * 3 * kwargs.get('contour_step', np.sqrt(2))**np.arange(0, 3, 1)
+            contour_colour = next(contour_colour_iter)
+            ax.contour(radio_cutout.data, levels=levels, transform=ax.get_transform(radio_cutout.wcs),
+                        colors=contour_colour, alpha=0.6)
+            if kwargs.get('add_beam', False) == True:
+                wcsaxes.add_beam(ax,header=radio_hdu.header,corner=next(beam_pos_iter),frame=False,
+                                    edgecolor=contour_colour,hatch='////',fill=True,facecolor='white')
+            if radio_cutout:    # QuadContourSet (from ax.contour call) does not support labels directly
+                handles.append(patches.Patch(color=contour_colour,label=f"{instrument}"))
+
     ax.set_xlim(xlims)
     ax.set_ylim(ylims)
 
@@ -200,7 +220,8 @@ def _generate_stack_and_plot(se: SourceEntry, hdus: list[fits.ImageHDU], stack_n
         plt.savefig(f"{save_path}/{se.short_label}_{stack_name}_overlay.png", bbox_inches='tight', dpi=200)
     plt.show()
 
-def plot_photometry(phot: PhotometryTool, save_path: str=None, ignore_negative: bool=False):
+def plot_photometry(phot: PhotometryTool, save_path: str=None, ignore_negative: bool=False, yscale: str='symlog',
+                    xscale: str='log'):
     """
     Generates and optionally saves the SED plot.
     """
@@ -227,14 +248,22 @@ def plot_photometry(phot: PhotometryTool, save_path: str=None, ignore_negative: 
     ax.set_ylabel(r'$F_\nu$ / $\mu$Jy', fontsize='xx-large')
     ax.text(0.05, 0.90, f"{display_name}", fontsize='x-large', fontweight='bold', color='black', transform=ax.transAxes)
     ax.axhline(0, color='grey', linestyle='dashed', alpha=0.7)
-    ax.set_xscale('log')
-    ax.set_yscale('symlog', linthresh=1e0)
-    ax.minorticks_on()
+    
+    assert xscale in ['linear', 'log'], "xscale must be 'linear' or 'log'"
+    assert yscale in ['linear', 'log', 'symlog'], "yscale must be 'linear', 'log' or 'symlog'"
+
+    ax.set_xscale(xscale)
+    if yscale == 'symlog':
+        ax.set_yscale(yscale, linthresh=1e0)
+    else:
+        ax.set_yscale(yscale)
+    if xscale != 'linear' and yscale != 'linear':
+        ax.minorticks_on()
 
     # ax.grid(True,'both','both')
     fluxes = [data['flux'][0].to(u.uJy).value for data in phot.photometry_data.values() \
                 if data['flux'] + data['flux_err'] > 0 or ignore_negative == False]
-    ax.set_ylim(min(np.floor(min(fluxes)*0.95**np.sign(min(fluxes))), 0), max(np.ceil(max(fluxes)*1.1), 0))
+    ax.set_ylim(min(np.floor(min(fluxes)*0.9**np.sign(min(fluxes))), 0.2*min(fluxes)), max(np.ceil(max(fluxes)*1.1), 0))
 
     # Get the major locator object matplotlib is using for the y-axis
     y_major_locator = ax.yaxis.get_major_locator()
@@ -250,16 +279,17 @@ def plot_photometry(phot: PhotometryTool, save_path: str=None, ignore_negative: 
     # Set a new locator for the y-axis that places ticks at our desired locations
     ax.yaxis.set_major_locator(ticker.FixedLocator(major_ticks))
 
-    # Create a MinorSymLogLocator instance, passing the same linthresh
-    minor_locator = ticker.SymmetricalLogLocator(ax.yaxis.get_transform(), subs=np.arange(2,10,1))
+    if yscale == 'symlog':
+        # Create a MinorSymLogLocator instance, passing the same linthresh
+        minor_locator = ticker.SymmetricalLogLocator(ax.yaxis.get_transform(), subs=np.arange(2,10,1))
 
-    # Set the minor locator for the y-axis
-    minor_ticks = minor_locator.tick_values(*ax.get_ybound())
-    minor_ticks = np.append(minor_ticks, np.arange(-0.9, 1.0, 0.1))
-    minor_ticks.sort()
+        # Set the minor locator for the y-axis
+        minor_ticks = minor_locator.tick_values(*ax.get_ybound())
+        minor_ticks = np.append(minor_ticks, np.arange(-0.9, 1.0, 0.1))
+        minor_ticks.sort()
 
-    # ax.yaxis.set_minor_locator(minor_locator)
-    ax.yaxis.set_minor_locator(ticker.FixedLocator(minor_ticks))
+        # ax.yaxis.set_minor_locator(minor_locator)
+        ax.yaxis.set_minor_locator(ticker.FixedLocator(minor_ticks))
     
     if save_path:
         plt.savefig(f"{save_path}/{display_name}_fluxes.pdf")
@@ -293,8 +323,9 @@ def plot_multiwl_stamps(phot: PhotometryTool, cutout_size: u.Quantity=10*u.arcse
             warnings.simplefilter("ignore")
             ax, stamp = plot_stamp(axs[ax_idx], hdul, summary['skycoord'], cutout_size=cutout_size, **kwargs)
         
-        ax.text(0.05, 0.90, summary['display_name'], color='white', fontsize='x-large', fontweight='heavy',
-                bbox=dict(boxstyle="round", ec='white', fc='black'), transform=ax.transAxes)
+        if ax_idx == 0:
+            ax.text(0.05, 0.90, summary['display_name'], color='white', fontsize='x-large', fontweight='heavy',
+                    bbox=dict(boxstyle="round", ec='white', fc='black'), transform=ax.transAxes)
         
         overlay_aperture(ax, ap_pos=summary['skycoord'], ap_diameter=kwargs.get('ap_diameter', 2*u.arcsec), color='red', lw=1.5)
         
@@ -362,6 +393,7 @@ def plot_all_stamps(se: SourceEntry, cutout_size: u.Quantity=10*u.arcsec, save_p
             ax, stamp = plot_stamp(axs[i], hdul, se.host_coord, cutout_size=cutout_size, **kwargs)
         
         ax.plot(*stamp.wcs.world_to_pixel(se.radio_coord), marker='x', color='yellow', ms=6, transform=ax.get_transform(stamp.wcs))
+        ax.plot(*stamp.wcs.world_to_pixel(se.host_coord), marker='o', ms=14, mfc='none', mec='blue', mew=0.5, transform=ax.get_transform(stamp.wcs))
 
         ax.set_title(rf"{origin} ${band}$, $\lambda_c$={wavelengths[i]} um", fontsize='medium')
 
