@@ -25,5 +25,11 @@ wheels/
 # Sphinx documentation
 docs/_build/
 
+# Secrets
+*.login
+
+# Generated query libraries/scripts (e.g. HSC_downloadCutout.py, but not __init__.py)
+external/[^_]*.py
+
 # Any astronomical images kept in demo during testing
 *.fits

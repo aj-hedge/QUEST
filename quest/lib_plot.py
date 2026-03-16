@@ -22,9 +22,21 @@ from .lib_photometry import PhotometryTool
 
 
 def plot_stamp(in_ax: wcsaxes.WCSAxes, hdul: fits.HDUList, coord: SkyCoord, cutout_size: u.Quantity=5*u.arcsec,
-            cmap: str='Greys', vmin: float=0.05, vmax: float=0.95, sigma_clip_norm: float|None=None, **kwargs) -> wcsaxes.WCSAxes:
+            cmap: str='Greys', vmin: float=0.05, vmax: float=0.95,
+            sigma_clip_norm: float|list[float]|tuple[float]|None=None, **kwargs) -> wcsaxes.WCSAxes:
     '''
     Create 2D cutout/stamp with field-of-view `cutout_size` about a target `coord`.
+
+    Parameters    ----------
+    in_ax   :   Matplotlib axes to plot on, must be a WCSAxes with celestial WCS.
+    hdul    :   FITS HDUList containing the image to cutout from.
+    coord   :   `SkyCoord` of the target to cutout about.
+    cutout_size :   Size of the cutout/stamp, as an `astropy.Quantity` with angular units. Default is 5 arcsec.
+    cmap    :   Colourmap to use in `imshow`. Default is 'Greys'.
+    vmin, vmax  :   Percentiles to use for `vmin` and `vmax` in `simple_norm` stretch. Default is 5th and 95th percentiles.
+    sigma_clip_norm :   Sigma to clip to when determining `vmin`/`vmax` for image stretch. Can be a tuple/list
+                        of (sigma_lower, sigma_upper) or a single number to apply symmetrically. If provided, this
+                        overrides the `vmin` and `vmax` percentiles. Default is `None`.
     '''
     im_hdu = get_image_hdu(hdul)
     im_wcs = WCS(im_hdu.header,fobj=hdul)
@@ -38,7 +50,12 @@ def plot_stamp(in_ax: wcsaxes.WCSAxes, hdul: fits.HDUList, coord: SkyCoord, cuto
     ax = plt.subplot(in_ax.get_subplotspec(),projection=stamp.wcs)
     del in_ax
     if sigma_clip_norm is not None:
-        sigma_cut = sigma_clip(im_hdu.data,sigma=sigma_clip_norm, maxiters=10)
+        if isinstance(sigma_clip_norm, (tuple, list)) and len(sigma_clip_norm) == 2:
+            sigma_cut = sigma_clip(im_hdu.data, sigma_lower=sigma_clip_norm[0], sigma_upper=sigma_clip_norm[1], maxiters=10)
+        elif isinstance(sigma_clip_norm, (int, float)):
+            sigma_cut = sigma_clip(im_hdu.data,sigma=sigma_clip_norm, maxiters=10)
+        else:
+            raise ValueError("sigma_clip_norm must be either a single number or a tuple of (sigma_lower, sigma_upper)")
         ax.imshow(stamp.data,cmap=cmap,norm=simple_norm(im_hdu.data,vmin=np.nanmin(sigma_cut),vmax=np.nanmax(sigma_cut)))
     else:
         ax.imshow(stamp.data,cmap=cmap,norm=simple_norm(im_hdu.data,min_percent=vmin*100,max_percent=vmax*100))
@@ -62,59 +79,61 @@ def overlay_aperture(ax: wcsaxes.WCSAxes, ap_pos: SkyCoord, ap_diameter: u.Quant
     ap.plot(ax,**plot_args)
     return ax
     
-def plot_overlays(phot_tool: PhotometryTool, save_path: str=None, stamp_radius: u.Quantity=15*u.arcsec,
+def plot_overlays(phot: PhotometryTool, save_path: str=None, stamp_radius: u.Quantity=15*u.arcsec,
                   optical_bands: list[str]=['g', 'r', 'i', 'z'], ir_bands: list[str]=['J', 'H', 'K', 'Ks'],
-                  ignore_negative: bool=False, data_dir_radio: list[str]=[],
+                  ignore_negative: bool=False,
                   ignored_filepaths: set[str]=set(), **kwargs):
     """
     Creates optical/IR stacks and overlays radio continuum contours.
     
     Extra kwargs
     ----------
-    sigma_clip_norm :   Sigma to clip to when determining `vmin`/`vmax` for image stretch.
+    sigma_clip_norm :   Sigma to clip to when determining `vmin`/`vmax` for image stretch. Can be a tuple/list
+                        of (sigma_lower, sigma_upper) or a single number to apply symmetrically. Default is 5,
+                        which applies a -5 sigma to 5 sigma stretch.
     cmap    :   Colourmap to use in `imshow`. Default is 'Greys'.
     add_beam    :   Whether to add beam ellipse to radio contours. Default: `False`.
     contour_step    :   Overlaid contour step size (geometric progression of contour_step ** (0,1,2)), default: `np.sqrt(2)`.
                         First contour is at 3*RMS.
     """
-    print(f"--- Generating overlay plots for {phot_tool.source.source_name} ---")
+    print(f"--- Generating overlay plots for {phot.source.source_name} ---")
     
-    optical_hdus, available_optical_bands = _get_hdus_for_bands(phot_tool=phot_tool,
+    optical_hdus, available_optical_bands = _get_hdus_for_bands(phot=phot,
                                                                 bands=optical_bands,
                                                                 cutout_size=stamp_radius*3,
                                                                 ignore_negative=ignore_negative)
-    ir_hdus, available_ir_bands = _get_hdus_for_bands(phot_tool=phot_tool,
+    ir_hdus, available_ir_bands = _get_hdus_for_bands(phot=phot,
                                                       bands=ir_bands,
                                                       cutout_size=stamp_radius*3,
                                                       ignore_negative=ignore_negative)
 
     if optical_hdus:
-        _generate_stack_and_plot(se=phot_tool.source, hdus=optical_hdus, stack_name=available_optical_bands,
+        _generate_stack_and_plot(se=phot.source, hdus=optical_hdus, stack_name=available_optical_bands,
                                  title_prefix="Optical", save_path=save_path, cutout_size=stamp_radius*2,
-                                 data_dir_radio=data_dir_radio, ignored_filepaths=ignored_filepaths, **kwargs)
+                                 ignored_filepaths=ignored_filepaths, **kwargs)
     if ir_hdus:
-        _generate_stack_and_plot(se=phot_tool.source, hdus=ir_hdus, stack_name=available_ir_bands,
+        _generate_stack_and_plot(se=phot.source, hdus=ir_hdus, stack_name=available_ir_bands,
                                  title_prefix="IR", save_path=save_path, cutout_size=stamp_radius*2,
-                                 data_dir_radio=data_dir_radio, ignored_filepaths=ignored_filepaths, **kwargs)
+                                 ignored_filepaths=ignored_filepaths, **kwargs)
     print("-" * 30)
 
-def _get_hdus_for_bands(phot_tool: PhotometryTool, bands: list[str],
+def _get_hdus_for_bands(phot: PhotometryTool, bands: list[str],
                         cutout_size: u.Quantity, ignore_negative: bool):
     hdus = []
     available_bands = []
     for band in bands:
-        phot_key = f"{phot_tool.source.source_name}_{band}"
-        summary = phot_tool.photometry_data.get(phot_key)
+        phot_key = f"{phot.source.source_name}_{band}"
+        summary = phot.photometry_data.get(phot_key)
         if not summary:
             continue
         if summary['flux'] + summary['flux_err'] < 0 and ignore_negative == True:
             continue
-        entry = phot_tool.source.best_data.get(band)
+        entry = phot.source.best_data.get(band)
         if entry:
             hdul = fits.open(entry.filepath)
             hdu = get_image_hdu(hdul)
             wcs = WCS(hdu.header)
-            cutout = nddata_utils.Cutout2D(hdu.data, phot_tool.source.host_coord, cutout_size, wcs=wcs)
+            cutout = nddata_utils.Cutout2D(hdu.data, phot.source.host_coord, cutout_size, wcs=wcs)
             hdu.data = cutout.data
             hdu.header.update(cutout.wcs.to_header())
             hdus.append(hdu)
@@ -122,7 +141,7 @@ def _get_hdus_for_bands(phot_tool: PhotometryTool, bands: list[str],
     return hdus, ''.join(available_bands)
 
 def _generate_stack_and_plot(se: SourceEntry, hdus: list[fits.ImageHDU], stack_name: str, title_prefix: str,
-                                save_path: str, cutout_size: u.Quantity, data_dir_radio: list[str],
+                                save_path: str, cutout_size: u.Quantity,
                                 ignored_filepaths: set[str], **kwargs):
     wcs_stack, shape_stack = mosaicking.find_optimal_celestial_wcs(hdus)
     data_stacked, _ = mosaicking.reproject_and_coadd(hdus, wcs_stack, shape_out=shape_stack, reproject_function=reproject_interp)
@@ -131,7 +150,12 @@ def _generate_stack_and_plot(se: SourceEntry, hdus: list[fits.ImageHDU], stack_n
     
     fig, ax = plt.subplots(figsize=(5, 4), subplot_kw={'projection': cutout.wcs})
     
-    sigma_clipped = sigma_clip(cutout.data, sigma=kwargs.get('sigma_clip_norm', 5))
+    if isinstance(kwargs.get('sigma_clip_norm', None), (list, tuple)) \
+        and len(kwargs.get('sigma_clip_norm', None)) == 2:
+        sigma_clipped = sigma_clip(cutout.data, sigma_lower=kwargs.get('sigma_clip_norm', None)[0],
+                                   sigma_upper=kwargs.get('sigma_clip_norm', None)[1], maxiters=10)
+    else:
+        sigma_clipped = sigma_clip(cutout.data, sigma=kwargs.get('sigma_clip_norm', 5))
 
     ax.imshow(cutout.data, origin='lower', cmap=kwargs.get('cmap', 'Greys'),
                 norm=simple_norm(cutout.data, vmin=np.nanmin(sigma_clipped), vmax=np.nanmax(sigma_clipped)))
@@ -149,17 +173,7 @@ def _generate_stack_and_plot(se: SourceEntry, hdus: list[fits.ImageHDU], stack_n
     beam_pos_iter = iter(['bottom left', 'bottom right', 'top left' ,'top right', 'bottom', 'top', 'left', 'right'])
     handles, labels = ax.get_legend_handles_labels()
     
-    if len(data_dir_radio) > 1:
-        radio_paths = set()
-        for radio_dir in data_dir_radio:
-            radio_paths.update(glob.glob(f'{radio_dir}/*.fits'))
-            radio_paths.update(glob.glob(f'{radio_dir}/**/*.fits'))
-    elif len(data_dir_radio) == 1:
-        radio_paths = set()
-        radio_paths.update(glob.glob(f'{data_dir_radio[0]}/*.fits'))
-        radio_paths.update(glob.glob(f'{data_dir_radio[0]}/**/*.fits'))
-    else:
-        radio_paths = set()
+    radio_paths = se.containing_images_radio
     radio_cutout = None
 
     for radio_path in radio_paths:
@@ -167,7 +181,7 @@ def _generate_stack_and_plot(se: SourceEntry, hdus: list[fits.ImageHDU], stack_n
             try:
                 if skycoord_in_image(radio_path, se.host_coord):
                     with fits.open(radio_path) as radio_hdul:
-                        if not validate_image(get_image_hdu(radio_hdul), min_fill_factor=0.2):
+                        if not validate_image(get_image_hdu(radio_hdul), min_fill_factor=0.08):
                             print(f'[DEBUG] {radio_path} could not be validated.')
                             continue
                 else:
@@ -209,6 +223,8 @@ def _generate_stack_and_plot(se: SourceEntry, hdus: list[fits.ImageHDU], stack_n
                                     edgecolor=contour_colour,hatch='////',fill=True,facecolor='white')
             if radio_cutout:    # QuadContourSet (from ax.contour call) does not support labels directly
                 handles.append(patches.Patch(color=contour_colour,label=f"{instrument}"))
+            
+            radio_hdul.close()
 
     ax.set_xlim(xlims)
     ax.set_ylim(ylims)
@@ -217,7 +233,7 @@ def _generate_stack_and_plot(se: SourceEntry, hdus: list[fits.ImageHDU], stack_n
         ax.legend(handles=handles, loc='upper left', fontsize='large', bbox_to_anchor=(1.05, 1), borderaxespad=0.)
     
     if save_path:
-        plt.savefig(f"{save_path}/{se.short_label}_{stack_name}_overlay.png", bbox_inches='tight', dpi=200)
+        plt.savefig(f"{save_path}/{se.short_label}_{stack_name}_{cutout_size.value}{cutout_size.unit}_overlay.png", bbox_inches='tight', dpi=200)
     plt.show()
 
 def plot_photometry(phot: PhotometryTool, save_path: str=None, ignore_negative: bool=False, yscale: str='symlog',
@@ -299,6 +315,10 @@ def plot_multiwl_stamps(phot: PhotometryTool, cutout_size: u.Quantity=10*u.arcse
                         ignore_negative: bool=False, **kwargs):
     """
     Generates and optionally saves multi-wavelength stamp plots.
+
+    kwargs are passed to `plot_stamp`, see that function's documentation for available arguments.
+    `ap_diameter` is also available to `overlay_aperture` via kwargs, and can be used to specify
+    the diameter of the overlaid aperture. Default is 2 arcsec.
     """
     if not phot.photometry_data: return
     
@@ -329,7 +349,8 @@ def plot_multiwl_stamps(phot: PhotometryTool, cutout_size: u.Quantity=10*u.arcse
         
         overlay_aperture(ax, ap_pos=summary['skycoord'], ap_diameter=kwargs.get('ap_diameter', 2*u.arcsec), color='red', lw=1.5)
         
-        ax.plot(*stamp.wcs.world_to_pixel(summary['radio_coord']), marker='x', color='yellow', ms=6, transform=ax.get_transform(stamp.wcs))
+        ax.plot(*stamp.wcs.world_to_pixel(summary['radio_coord']), marker='X', mfc='yellow', mec='black', ms=8, mew=0.7,
+                transform=ax.get_transform(stamp.wcs))
 
         ax.set_title(rf"{summary['origin']} ${summary['band']}$, $\lambda_c$={summary['wavelength']}", fontsize='large')
 
@@ -352,6 +373,8 @@ def plot_all_stamps(se: SourceEntry, cutout_size: u.Quantity=10*u.arcsec, save_p
                     ax_ticks_off: str='xy', **kwargs):
     """
     Generates and optionally saves ALL stamp plots containing the source (in its register).
+
+    kwargs are passed to `plot_stamp`, see that function's documentation for available arguments.
     """
     if len(se.containing_images) == 0: return
     

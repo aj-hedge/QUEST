@@ -21,10 +21,9 @@ class PhotometryTool:
     Optionally also provide output_fig_directory: str='./relative/path/to/figures' to control
     where (debug) figures are saved. Default is './figures'.
     """
-    def __init__(self, source_entry: SourceEntry, data_dir_radio: list[str]=[], output_fig_dir: str='./figures'):
+    def __init__(self, source_entry: SourceEntry, output_fig_dir: str='./figures'):
         self.source = source_entry
         self.photometry_data = {}
-        self.data_dir_radio = data_dir_radio
         self.output_fig_dir = output_fig_dir
 
     def perform_photometry(self, ap_diameter: u.Quantity=2*u.arcsec, n_rand_aps: int=1000, ap_max_dist: u.Quantity=60*u.arcsec,
@@ -212,7 +211,7 @@ class PhotometryTool:
         - out_type : `str`
             Printing style. Can be 'str', 'latex' or 'beagle'.
         - out_file : `str`
-            Path to output file, otherwise output is to stdout.
+            Path to output file, otherwise output is to stdout. Will be appended with the source name and .asc file extension.
         '''
         header_str = ''
         data_str = ''

@@ -108,6 +108,7 @@ class SourceEntry:
         self.host_coord = radio_coord
         self.checked_images = set()
         self.containing_images = set()
+        self.containing_images_radio = set()
 
     def __repr__(self) -> str:
         return f"""{type(self).__name__}({self.source_name=!r}
@@ -291,12 +292,14 @@ class DataTool:
     Class to discover and hold the best available imaging data for a list of sources.
     It intelligently updates its database as new sources or images are added.
     """
-    def __init__(self, search_directories: list[str] = None):
+    def __init__(self, search_directories: list[str] = None, radio_directories: list[str] = None):
         self.search_directories = search_directories if search_directories else []
+        self.radio_directories = radio_directories if radio_directories else []
         self.sources: list[SourceEntry] = []
         self.all_data: list[DataEntry] = []   # Mostly for debug purposes
         self.checked_filepaths = set() # Master set of all file paths ever seen
         self.ignored_filepaths = set() # File paths to ignore, can be added to if images are deemed invalid or not useful
+        self.radio_filepaths = set()
 
     def __repr__(self) -> str:
         return f"""{type(self).__name__}({self.search_directories=!r})"""
@@ -333,6 +336,14 @@ class DataTool:
             except Exception as e:
                 print(f"[ERROR]\tadd_source: Could not process {de.filepath} for new source {source_name}: {e}")
             source.checked_images.add(de.filepath) # Mark as checked for this source
+        
+        # Same for radio images
+        for fp in self.radio_filepaths:
+            try:
+                if skycoord_in_image(fp, source.radio_coord):
+                    source.containing_images_radio.add(fp)
+            except Exception as e:
+                print(f"[ERROR]\tadd_source: Could not process {fp} for new source {source_name}: {e}")
 
     def add_data(self, filepath: str) -> DataEntry:
         """
@@ -377,6 +388,7 @@ class DataTool:
         Scans local directories for new images and checks them against all sources.
         """
         print("Scanning local directories for FITS files...")
+        # Check the search_directories (Optical/IR by default)
         all_fits_files = []
         for data_dir in self.search_directories:
             found_files = glob.glob(f'{data_dir}/**/*.fits', recursive=True)
@@ -385,36 +397,72 @@ class DataTool:
             all_fits_files.extend(found_files)
 
         new_files = set(all_fits_files) - self.checked_filepaths
-        if not new_files:
-            print("No new images found.")
-            return
-        
-        print(f"Found {len(new_files)} new images. Checking against {len(self.sources)} sources.")
+        if new_files:
+            print(f"Found {len(new_files)} new images. Checking against {len(self.sources)} sources.")
 
-        if verbose:
-            stdout_destination = stdout
+            if verbose:
+                stdout_destination = stdout
+            else:
+                stdout_destination = None
+            # Check each new image against all existing sources
+            for i, new_filepath in enumerate(new_files):
+                print(f"\rAdding {new_filepath}\t({i+1}/{len(new_files)})" + " "*50, end='')
+                stdout.flush()
+
+                with redirect_stdout(stdout_destination):
+                    new_data = self.add_data(new_filepath)
+
+                    for source in self.sources:
+                        if new_filepath in source.checked_images:
+                            continue # This source has already been checked against this file for some reason
+                        try:
+                            if new_data and new_data.skycoord_in_image(source.radio_coord):
+                                source.update_best_data(new_data)
+                                source.containing_images.add(new_filepath)
+                            source.checked_images.add(new_filepath) # Mark as checked for this source
+                        except Exception as e:
+                            print(f"[ERROR]\tscan_local_directories: Could not process {new_filepath} for source {source.source_name}: {e}")
+
+            self.checked_filepaths.update(new_files)
         else:
-            stdout_destination = None
-        # Check each new image against all existing sources
-        for i, new_filepath in enumerate(new_files):
-            print(f"\rAdding {new_filepath}\t({i+1}/{len(new_files)})" + " "*50, end='')
-            stdout.flush()
+            print("No new images found.")
 
-            with redirect_stdout(stdout_destination):
-                new_data = self.add_data(new_filepath)
+        # Do same for radio directories
+        print("Scanning local directories for FITS files (radio)...")
+        all_fits_files = []
+        for data_dir in self.radio_directories:
+            found_files = glob.glob(f'{data_dir}/**/*.fits', recursive=True)
+            if len(self.ignored_filepaths) > 0:
+                found_files = [s for s in found_files if all(ignored_path not in s for ignored_path in self.ignored_filepaths)]
+            all_fits_files.extend(found_files)
 
-                for source in self.sources:
-                    if new_filepath in source.checked_images:
-                        continue # This source has already been checked against this file for some reason
-                    try:
-                        if new_data and new_data.skycoord_in_image(source.radio_coord):
-                            source.update_best_data(new_data)
-                            source.containing_images.add(new_filepath)
-                        source.checked_images.add(new_filepath) # Mark as checked for this source
-                    except Exception as e:
-                        print(f"[ERROR]\tscan_local_directories: Could not process {new_filepath} for source {source.source_name}: {e}")
+        new_files = set(all_fits_files) - self.radio_filepaths
+        if new_files:
+            print(f"Found {len(new_files)} new radio images. Checking against {len(self.sources)} sources.")
 
-        self.checked_filepaths.update(new_files)
+            if verbose:
+                stdout_destination = stdout
+            else:
+                stdout_destination = None
+            # Check each new image against all existing sources
+            for i, new_filepath in enumerate(new_files):
+                print(f"\rAdding {new_filepath}\t({i+1}/{len(new_files)})" + " "*50, end='')
+                stdout.flush()
+
+                with redirect_stdout(stdout_destination):
+                    for source in self.sources:
+                        if new_filepath in source.containing_images_radio:
+                            continue # This source has already been checked against this file for some reason
+                        try:
+                            if new_filepath and skycoord_in_image(new_filepath, source.radio_coord):
+                                source.containing_images_radio.add(new_filepath)
+                        except Exception as e:
+                            print(f"[ERROR]\tscan_local_directories: Could not process {new_filepath} for source {source.source_name}: {e}")
+
+            self.radio_filepaths.update(new_files)
+        else:
+            print("No new images found.")
+
         print("Finished scanning local directories.")
 
     def set_ignored_filepaths(self, ignore_paths: list[str]):

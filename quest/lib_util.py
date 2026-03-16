@@ -391,7 +391,7 @@ def get_zp(hdul: fits.HDUList, tmass_corr=None, band='') -> float:
 def validate_image(im_hdu: fits.ImageHDU, min_fill_factor: float=0.4) -> bool:
     '''
     From the image HDU, get the data, check for a fill-value (using the mode of the data distribution), else use NaNs, then
-    ensure the fill factor of valid data is at least min_fill_factor.
+    ensure the fill factor of **valid** data is at least min_fill_factor.
     '''
     data = im_hdu.data
     mode = np.unique(data, return_counts=True)[0]
@@ -728,7 +728,7 @@ def convert_flux(flux_sum: np.ndarray, astronomy_method: str, hdul: fits.HDUList
 # Survey configs when retrieving cutouts, saving, applying known fixes.
 # Since this config is accessible via the QueryTool class, it can be updated with custom survey definitions as needed, simply
 # linking to custom get_<survey> and fix_<survey> functions which can be imported from a library or defined in a script/notebook.
-default_known_origins = ['2MASS', 'unWISE', 'AllWISE', 'EuclidMER', 'HSC', 'DECaLS', 'DES', 'HAWK-I', \
+default_known_origins = ['2MASS', 'unWISE', 'AllWISE', 'Euclid', 'HSC', 'DECam', 'DECaLS', 'DES', 'HAWK-I', \
                         'UHS', 'VHS', 'LAS', 'VIKING', 'SEIP', 'Spitzer', 'SHARKS']
 
 # TEMPLATE CONVERSION FUNCTION
