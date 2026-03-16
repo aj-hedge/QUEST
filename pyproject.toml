@@ -28,6 +28,7 @@ dependencies = [
   "requests>=2.25.1",
   "scipy>=1.14.1",
   "reproject>=0.14.1",
+  "aiohttp>=3.12.15",
 ]
 
 [project.urls]
