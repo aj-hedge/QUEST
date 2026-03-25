@@ -315,8 +315,13 @@ def calculate_rms(hdul: fits.HDUList) -> float:
         return None
 
     # 1. Convert the entire image array to Jy
-    band = get_band(hdul)
-    data_jy = convert_flux(im_hdu.data, get_astronomy_method(hdul), hdul, ap_diameter=None, band=band)
+    if 'JY' in get_hdu_with(hdul,'BUNIT').header['BUNIT'].strip(' ').upper():
+        # If units are already in Jy, we can skip the conversion
+        data_jy = im_hdu.data * u.Jy
+    else:
+        band = get_band(hdul)
+        data_jy = convert_flux(im_hdu.data, get_astronomy_method(hdul), hdul, ap_diameter=None, band=band)
+    
     if data_jy is None:
         return None
 
