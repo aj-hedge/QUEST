@@ -199,6 +199,7 @@ def _generate_stack_and_plot(se: SourceEntry, hdus: list[fits.ImageHDU], stack_n
             if not bmaj or not bmin:
                 continue
             if max(bmaj, bmin) > cutout_size.to(u.deg).value / 4:
+                print(f'[INFO] skipped {radio_path} since the restoring beam is too large for a {cutout_size} cutout.')
                 continue
             radio_wcs = WCS(radio_hdu.header, naxis=2)
             # Ensure we deal with stokes I images, take first element of last axis
