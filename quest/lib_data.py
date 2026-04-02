@@ -315,6 +315,44 @@ class DataTool:
             pickle.dump(self, f)
         print(f"Database saved to {filepath}.")
 
+    def clear_source_entry_indexing(self, source_entry: str | SourceEntry):
+        source_name = source_entry if isinstance(source_entry, str) else source_entry.source_name
+        source = next((s for s in self.sources if s.source_name == source_name), None)
+        if source:
+            source.checked_images = set()
+            source.containing_images = set()
+            source.containing_images_radio = set()
+            source.best_data = {}
+            print(f"Cleared checked file paths and best data for source {source_name}.")
+        else:
+            print(f"Source {source_name} not found in database.")
+    
+    def clear_data_entry_indexing(self, data_entry: str | DataEntry):
+        filepath = data_entry if isinstance(data_entry, str) else data_entry.filepath
+        self.checked_filepaths.discard(filepath)
+        self.radio_filepaths.discard(filepath)
+        for source in self.sources:
+            source.checked_images.discard(filepath)
+            source.containing_images.discard(filepath)
+            source.containing_images_radio.discard(filepath)
+            # If this file was the best data for any band, remove it and allow it to be re-evaluated
+            for band, data_entry in list(source.best_data.items()):
+                if data_entry.filepath == filepath:
+                    del source.best_data[band]
+        self.all_data = [de for de in self.all_data if de.filepath != filepath]
+        print(f"Cleared indexing for {filepath} and removed from all sources' best data if applicable.")
+
+    def clear_all_indexing(self):
+        self.checked_filepaths = set()
+        self.radio_filepaths = set()
+        for source in self.sources:
+            source.checked_images = set()
+            source.containing_images = set()
+            source.containing_images_radio = set()
+            source.best_data = {}
+        self.all_data = []
+        print("Cleared all checked file paths and reset source image associations.")
+
     def add_source(self, source_name: str, short_label: str, radio_coord: SkyCoord):
         """
         Adds a new source and checks it against all previously known images.

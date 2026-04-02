@@ -361,8 +361,8 @@ class PhotometryTool:
             flux_clipped: np.ma.MaskedArray = sigma_clip(rand_flux,sigma=sigma_clipping,maxiters=10)
 
             if debug:
-                origin = PhotometryTool.get_hdu_with(hdul, 'ORIGIN').header.get('ORIGIN', '')
-                band = PhotometryTool.get_hdu_with(hdul, 'BAND').header.get('BAND', '')
+                origin = get_hdu_with(hdul, 'ORIGIN').header.get('ORIGIN', '')
+                band = get_hdu_with(hdul, 'BAND').header.get('BAND', '')
                 print(f"[DEBUG]\t{origin} {band}: Within {rand_dist} about {coord.to_string(style='hmsdms')}," \
                       +f"\n {npos} random {ap_diameter} apertures have flux stdv of {np.std(flux_clipped, ddof=1):.2e}" \
                       +f"\nand mean {sigma_clipping}-sigma clipped annuli background of {np.mean(rand_bkg):.2e} subtracted (their unique values).")

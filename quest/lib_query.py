@@ -26,7 +26,7 @@ from astroquery.ipac.irsa import Irsa   # IRSA contains a variety (e.g. Euclid, 
 from astroquery.ipac.irsa.irsa_dust import IrsaDust
 # from astroquery.ipac.irsa.ibe import Ibe
 # from astroquery.ipac.ned import Ned     # NED (only really useful for looking up well-known object image/spectra or object aliases)
-# from astroquery.esa.euclid import Euclid# Euclid via ESA
+from astroquery.esa.euclid import Euclid# Euclid via ESA
 # from astroquery.esa.hsa import HSA      # Herschel Science Archive
 # from astroquery.esa.hubble import ESAHubble # Hubble via ESA
 # from astroquery.esa.integral import Integral# INTernational Gamma-Ray Astrophysics Laboratory
@@ -43,6 +43,10 @@ from .lib_util import get_hdu_with, get_image_hdu, get_pix_res, skycoord_in_imag
 # NOTE: List of SIA2Service accessible data collections via IRSA here: https://irsa.ipac.caltech.edu/ibe/sia.html
 # NOTE: List of SIAService accessible data collections via NoirLAB Science Archive (NSA):
 #       https://datalab.noirlab.edu/docs/manual/UsingAstroDataLab/DataAccessInterfaces/SimpleImageAccessSIA/SimpleImageAccessSIA.html
+
+# TODO: Implement kwarg for choosing a non-default mirror/method for querying and retrieving data? This way
+#       if there are issues with one mirror/method, we can catch this in the calling query_online_archive function
+#       and retry with a different mirror/method before giving up on the survey-band combination entirely.
 
 
 def update_header(file: str, keyword: str, value: str, mode: str, clobber: bool=False):
@@ -80,7 +84,8 @@ def save_image_from_SIARecord(deepest_image: vo.dal.SIARecord, outname: str, coo
     Helper to save images from SIARecord URLs.
     '''
     debug = kwargs.get('debug', False)
-    with fits.open(deepest_image.getdataurl(), use_fsspec=False) as hdul:
+    # cache=True is required for opening FITS over URL since large images cannot be streamed in full to memory.
+    with fits.open(deepest_image.getdataurl(), use_fsspec=False, cache=True) as hdul:
         # Apply Cutout2D to reduce size of saved file
         if debug: print(f"[DEBUG]\tOpened URL: {deepest_image.getdataurl()}")
         im_hdu_idx = get_image_hdu(hdul, return_idx=True)
@@ -587,37 +592,12 @@ def get_Euclid_MER(data_dir: str, coord: SkyCoord, band: str, query_radius: u.Qu
     '''
     Retrieve the Euclid MER image products from IRSA.
     '''
-    IRSA_service = vo.dal.SIA2Service("https://irsa.ipac.caltech.edu/SIA")
-    im_table = IRSA_service.search(pos=(coord, query_radius), collection='euclid_DpdMerBksMosaic')
-
-    if len(im_table) == 0:
-        print(f"No Euclid MER {band} images found.")
-        return
+    debug = kwargs.get('debug', False)
 
     if not os.path.exists(f"{data_dir}/IR/EuclidMER"):
         os.mkdir(f"{data_dir}/IR/EuclidMER")
     if not os.path.exists(f"{data_dir}/Optical/EuclidMER"):
         os.mkdir(f"{data_dir}/Optical/EuclidMER")
-
-    tab = im_table.to_table()
-    science_rows = np.argwhere(tab['dataproduct_subtype'] == 'science')
-    band_rows = np.argwhere(tab['energy_bandpassname'] == band)
-    match_rows = np.intersect1d(science_rows, band_rows)
-
-    if len(match_rows) > 1:
-        print(f"Multiple Euclid MER {band} images found, retrieving deepest image.")
-        # We will get the headers of each access_url to find the one with the longest EXPTIME
-        exposure_times = []
-        for _, row in enumerate(tab[match_rows]):
-            with fits.open(row['access_url'], use_fsspec=True) as hdul:
-                exposure_times.append(get_hdu_with(hdul,'EXPTIME').header['EXPTIME'])
-        deepest_image = im_table.getrecord(match_rows[np.argmax(exposure_times)])
-    elif len(match_rows) == 1:
-        print(f"Euclid MER {band} image found.")
-        deepest_image = im_table.getrecord(match_rows[0])
-    else:
-        print(f"No Euclid MER {band} images matching request found.")
-        return
 
     if band in ['U','G','R','I','Z','VIS']:
         outname = f"{data_dir}/Optical/EuclidMER/{coord.to_string(style='hmsdms', precision=2).replace(' ','')}_" \
@@ -626,10 +606,98 @@ def get_Euclid_MER(data_dir: str, coord: SkyCoord, band: str, query_radius: u.Qu
         outname = f"{data_dir}/IR/EuclidMER/{coord.to_string(style='hmsdms', precision=2).replace(' ','')}_" \
                 + f"{band}_{cutout_size.value}{cutout_size.unit}_cutout.fits"
 
-    save_image_from_SIARecord(deepest_image, outname, coord, cutout_size, keep_full_image, debug=kwargs.get('debug', False))
+    mirrors = ['IRSA', 'ESA']   # first mirror is default
+    mirror = kwargs.get('mirror', 'IRSA') # if mirror is specified in kwargs, use that one first
+    if mirror != mirrors[0]:
+        mirrors.remove(mirror)
+        mirrors.insert(0, mirror)
 
-    # Attempt to apply any required fixes straight away
-    fix_Euclid_MER(outname, coord)
+    for mirror in mirrors:
+        match mirror:
+            case 'IRSA':
+                try:
+                    print(f"Trying IRSA mirror...")
+                    IRSA_service = vo.dal.SIA2Service("https://irsa.ipac.caltech.edu/SIA")
+                    im_table = IRSA_service.search(pos=(coord, query_radius), collection='euclid_DpdMerBksMosaic')
+
+                    if len(im_table) == 0:
+                        print(f"No Euclid MER {band} images found.")
+                        return
+
+                    tab = im_table.to_table()
+                    science_rows = np.argwhere(tab['dataproduct_subtype'] == 'science')
+                    band_rows = np.argwhere(tab['energy_bandpassname'] == band)
+                    match_rows = np.intersect1d(science_rows, band_rows)
+
+                    if len(match_rows) > 1:
+                        print(f"Multiple Euclid MER {band} images found, retrieving deepest image.")
+                        # We will get the headers of each access_url to find the one with the longest EXPTIME
+                        exposure_times = []
+                        for _, row in enumerate(tab[match_rows]):
+                            with fits.open(row['access_url'], use_fsspec=True) as hdul:
+                                exposure_times.append(get_hdu_with(hdul,'EXPTIME').header['EXPTIME'])
+                        deepest_image = im_table.getrecord(match_rows[np.argmax(exposure_times)])
+                    elif len(match_rows) == 1:
+                        print(f"Euclid MER {band} image found.")
+                        deepest_image = im_table.getrecord(match_rows[0])
+                        if debug: print(f"Access URL: {deepest_image.getdataurl()}")
+                    else:
+                        print(f"No Euclid MER {band} images matching request found.")
+                        return
+
+                    save_image_from_SIARecord(deepest_image, outname, coord, cutout_size, keep_full_image, debug=debug)
+                    break   # if we successfully retrieved from the first mirror, break out of the loop
+                except Exception as e:
+                    print(f"[ERROR]\tget_Euclid_MER: Astroquery failed for IRSA mirror: {e}")
+            case 'ESA':
+                try:
+                    print(f"Trying ESA mirror...")
+                    Euclid.get_status_messages()    # Error raised if not OK
+                    
+                    # Parse to Euclid-only instruments (no ground-based ancillary data for ESA)
+                    if band in ['U','G','R','I','Z']:
+                        raise ValueError(f"Band {band} is not a Euclid band, cannot retrieve from ESA mirror.")
+                    elif band in ['Y','J','H']:
+                        instrument = 'NISP'
+                    elif band == 'VIS':
+                        instrument = 'VIS'
+
+                    # astroquery:ESA/Euclid example
+                    adql_query = f"""SELECT file_name, file_path, datalabs_path, instrument_name, filter_name, ra, \
+dec, creation_date, product_type, patch_id_list, tile_index \
+FROM q1.mosaic_product \
+WHERE instrument_name='{instrument}' \
+AND filter_name='NIR_{band}' \
+AND INTERSECTS(CIRCLE({coord.ra.to(u.deg).value}, \
+{coord.dec.to(u.deg).value}, \
+{query_radius.to(u.deg).value:.7f}), \
+fov)=1 \
+ORDER BY file_name"""
+                    
+                    # job = Euclid.launch_job(adql_query)
+                    # records = job.get_results()
+                    records = Euclid.launch_job_async(adql_query).get_results()
+                    if len(records) == 0:
+                        print(f"No Euclid MER {band} images found.")
+                        return
+                    else:
+                        print(*records)
+                        deepest_image = records['file_path'][0] + '/' + records['file_name'][0]
+                        id = records['tile_index'][0]
+                    
+                    Euclid.get_cutout(file_path=deepest_image, instrument=instrument, id=id, coordinate=coord,
+                                      radius=cutout_size/2, output_file=outname, verbose=debug)
+                    break   # if we successfully retrieved from the first mirror, break out of the loop
+                except Exception as e:
+                    print(f"[ERROR]\tget_Euclid_MER: Astroquery failed for ESA mirror: {e}")
+            case _:
+                print(f"[WARNING]\tMirror '{mirror}' not recognized. Skipping.")
+    
+    if os.path.exists(outname):
+        # Attempt to apply any required fixes straight away
+        fix_Euclid_MER(outname, coord)
+    else:
+        raise FileNotFoundError(f"Failed to retrieve Euclid MER {band} image from all mirrors.")
 
 def fix_Euclid_MER(filepath: str, coord: SkyCoord=None):
     '''
@@ -706,16 +774,20 @@ def fix_Euclid_MER(filepath: str, coord: SkyCoord=None):
     else:
         band = filt[-1]
 
-    if not coord:
-        coord = get_image_centre_coord(filepath)
-    tab = get_extinction_table(coord)
-    if ext_filt:
+    tab = None
+    try:
+        if not coord:
+            coord = get_image_centre_coord(filepath)
+        tab = get_extinction_table(coord)
+    except Exception as e:
+        print(f"[WARNING]\tCould not retrieve extinction information for {filepath}: {e} (no correction will be applied)")
+
+    ext_corr = 0
+    if ext_filt and tab:
         try:
             ext_corr = np.mean(tab[[filt in ext_filt for filt in tab['Filter_name']]]['A_SandF'])
         except Exception as e:
-            ext_corr = 0
-    else:
-        ext_corr = 0
+            print(f"[WARNING]\tCould not retrieve extinction information for {filepath}: {e} (no correction will be applied)")
 
     update_header(filepath, 'WAVELEN', wl, 'image', clobber=False)
     update_header(filepath, 'ORIGIN', fits.open(filepath)[0].header['INSTRUME'], 'primary', clobber=True)
