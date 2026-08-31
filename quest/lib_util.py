@@ -3,7 +3,10 @@ from scipy import integrate, interpolate
 from astropy.io import fits
 import re as regex
 import photutils as photutils
+from photutils import aperture
+from shapely.geometry import Point, Polygon
 from astropy.wcs import WCS, FITSFixedWarning
+from astropy.wcs.utils import wcs_to_celestial_frame
 from astropy.coordinates import SkyCoord, Angle, CartesianRepresentation, ICRS, FK5
 from reproject import reproject_interp
 from astropy.stats import sigma_clip, sigma_clipped_stats, SigmaClip
@@ -217,9 +220,9 @@ def get_mean_local_bkg(data: np.ndarray, wcs: WCS, coords: SkyCoord,
     '''
     Get the mean local background value within annuli extending from `annu_in` to `annu_out` at positions `coords`.
     '''
-    annuli = photutils.aperture.SkyCircularAnnulus(coords,annu_in,annu_out)
+    annuli = aperture.SkyCircularAnnulus(coords,annu_in,annu_out)
     sigma_clipper = SigmaClip(sigma=bkg_sigma_clip,maxiters=10)
-    annuli_stats = photutils.aperture.ApertureStats(data,annuli,wcs=wcs,sigma_clip=sigma_clipper)
+    annuli_stats = aperture.ApertureStats(data,annuli,wcs=wcs,sigma_clip=sigma_clipper)
     bkg_means = annuli_stats.mean
     return np.atleast_1d(bkg_means) # ensure we can index/loop through the result even if it is for one coord
 
@@ -348,22 +351,39 @@ def get_pix_res(hdul: fits.HDUList) -> u.Quantity:
 def get_image_hdu(hdul: fits.HDUList, return_idx: bool=False) -> fits.ImageHDU:
     '''
     Iterate through a HDUList and return the first HDU that appears to contain image/cube data.
-    TODO: Find a better check, maybe first checking for IMAGE extension namecard.
+
+    The image-detection heuristic should be based on actual array data and image-like metadata,
+    rather than a fixed minimum size threshold, because valid FITS images can be small or have a
+    reference pixel outside the data array.
     '''
     im_hdu = None
     for i, hdu in enumerate(hdul):
-        if isinstance(hdu, fits.ImageHDU) or hdu.header.get('XTENSION','') in ['IMAGE', 'SCI'] \
-        or hdu.header.get('EXTNAME','') in ['IMAGE', 'SCI'] or hdu.header.get('EXTTYPE','') in ['IMAGE', 'SCI'] \
-        or hdu.header.get('IMAGETYP','') in ['IMAGE', 'SCI'] or hdu.header.get('TYPE','') in ['IMAGE', 'SCI'] \
-        or hdu.header.get('PRODCATG','') in ['SCIENCE.IMAGE'] or \
-        (hdu.header.get('NAXIS',0) >=2 and hdu.header.get('NAXIS1',0) > 10 and hdu.header.get('NAXIS2',0) > 10):
+        data = getattr(hdu, 'data', None)
+        has_array_data = data is not None and isinstance(data, np.ndarray) and np.ndim(data) >= 2
+        has_image_shape = has_array_data and np.shape(data)[-2] > 0 and np.shape(data)[-1] > 0
+
+        header = hdu.header if hasattr(hdu, 'header') else {}
+        image_markers = [
+            header.get('XTENSION', '').upper(),
+            header.get('EXTNAME', '').upper(),
+            header.get('EXTTYPE', '').upper(),
+            header.get('IMAGETYP', '').upper(),
+            header.get('TYPE', '').upper(),
+            header.get('PRODCATG', '').upper(),
+        ]
+
+        image_like = (
+            # isinstance(hdu, fits.ImageHDU)
+            # or hdu.__class__.__name__ == 'PrimaryHDU'
+            any(marker in ['IMAGE', 'SCI', 'SCIENCE.IMAGE'] for marker in image_markers)
+            or (header.get('NAXIS', 0) >= 2 and has_image_shape)
+            or has_image_shape
+        )
+
+        if image_like:
             im_hdu = hdu
             break
-        # if isinstance(np.asarray(hdu.data), np.ndarray):  # check array of data
-        #     if len(np.asarray(hdu.data).shape) > 1: # check at least 2D
-        #         if max(np.asarray(hdu.data).shape) > 30: # check reasonable size
-        #             im_hdu = hdu
-        #             break
+
     if return_idx:
         return i
     return im_hdu
@@ -414,34 +434,66 @@ def skycoord_in_image(fits_file: str, coord: SkyCoord) -> bool:
     TODO: DataTool should ingest local data, validate and store set of DataEntry instances for
     later lookup/loops (such as utilising this function).
     '''
-    # Open the FITS file and extract the WCS information
     with fits.open(fits_file) as hdul:
-        header = get_image_hdu(hdul).header
-        wcs = WCS(header, naxis=2)
+        hdu = get_image_hdu(hdul)
+        if hdu is None or hdu.data is None:
+            return False
 
-        # Get the dimensions of the image
-        n_x = header['NAXIS1']
-        n_y = header['NAXIS2']
+        wcs = WCS(hdu.header, naxis=2)
+        if not wcs.is_celestial:
+            return False
 
-    # Get the pixel coordinates of the corners of the image
-    corners_pix = np.array([[0, 0], [n_x - 1, 0], [0, n_y - 1], [n_x - 1, n_y - 1]])
+        # Build image footprint in world coordinates
+        # (usually the polygon of the boundary of the image)
+        # shape = hdu.data.shape[-2:]
+        footprint = wcs.calc_footprint(hdu.header)  # [(ra, dec), ...]
 
-    # Convert the pixel coordinates of the corners to world coordinates
-    corners_world = wcs.pixel_to_world(corners_pix[:, 0], corners_pix[:, 1])
+        # Convert footprint to SkyCoord and make a polygon in RA/Dec
+        # Ensure RA is in a continuous range around the target
+        sky = SkyCoord(
+            footprint[:, 0] * u.deg,
+            footprint[:, 1] * u.deg,
+            frame=wcs_to_celestial_frame(wcs)
+        )
 
-    # Convert to SkyCoord for easier comparisons
-    # corners_skycoord = SkyCoord(corners_world, unit='deg')
-    corners_skycoord = corners_world
+        # wrap RA to [-180, 180] for polygon containment
+        ra = sky.ra.wrap_at(180 * u.deg).deg
+        dec = sky.dec.deg
+
+        # polygon check (using shapely)
+        poly = Polygon(np.column_stack([ra, dec]))
+        p = Point(coord.ra.wrap_at(180 * u.deg).deg, coord.dec.deg)
+
+        return poly.contains(p) or poly.touches(p)
+
+    # # Open the FITS file and extract the WCS information
+    # with fits.open(fits_file) as hdul:
+    #     header = get_image_hdu(hdul).header
+    #     wcs = WCS(header, naxis=2)
+
+    #     # Get the dimensions of the image
+    #     n_x = header['NAXIS1']
+    #     n_y = header['NAXIS2']
+
+    # # Get the pixel coordinates of the corners of the image
+    # corners_pix = np.array([[0, 0], [n_x - 1, 0], [0, n_y - 1], [n_x - 1, n_y - 1]])
+
+    # # Convert the pixel coordinates of the corners to world coordinates
+    # corners_world = wcs.pixel_to_world(corners_pix[:, 0], corners_pix[:, 1])
+
+    # # Convert to SkyCoord for easier comparisons
+    # # corners_skycoord = SkyCoord(corners_world, unit='deg')
+    # corners_skycoord = corners_world
     
-    # Create a bounding box of RA and Dec
-    min_ra, max_ra = corners_skycoord.ra.deg.min(), corners_skycoord.ra.deg.max()
-    min_dec, max_dec = corners_skycoord.dec.deg.min(), corners_skycoord.dec.deg.max()
+    # # Create a bounding box of RA and Dec
+    # min_ra, max_ra = corners_skycoord.ra.deg.min(), corners_skycoord.ra.deg.max()
+    # min_dec, max_dec = corners_skycoord.dec.deg.min(), corners_skycoord.dec.deg.max()
 
-    # Check if the SkyCoord is within the bounding box
-    is_within_ra = min_ra <= coord.ra.deg <= max_ra
-    is_within_dec = min_dec <= coord.dec.deg <= max_dec
+    # # Check if the SkyCoord is within the bounding box
+    # is_within_ra = min_ra <= coord.ra.deg <= max_ra
+    # is_within_dec = min_dec <= coord.dec.deg <= max_dec
 
-    return is_within_ra and is_within_dec
+    # return is_within_ra and is_within_dec
 
 
 def get_astronomy_method(hdul: fits.HDUList) -> str:

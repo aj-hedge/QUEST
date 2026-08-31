@@ -22,7 +22,7 @@ from astroquery.vsa import Vsa          # VISTA Science Archive (e.g. VHS, VIDEO
 from astroquery.ukidss import Ukidss    # UKIRT Infrared Deep Sky Surveys (not including UHS???)
 from astroquery.sdss import SDSS        # SLOAN Digital Sky Survey
 # from astroquery.mast import Mast        # For STSci mission products (e.g. from JWST, HST, TESS, ...)
-from astroquery.ipac.irsa import Irsa   # IRSA contains a variety (e.g. Euclid, 2MASS, Spitzer, with submodules for irsa_dust and ibe)
+from astroquery.ipac.irsa import Irsa, Conf   # IRSA contains a variety (e.g. Euclid, 2MASS, Spitzer, with submodules for irsa_dust and ibe)
 from astroquery.ipac.irsa.irsa_dust import IrsaDust
 # from astroquery.ipac.irsa.ibe import Ibe
 # from astroquery.ipac.ned import Ned     # NED (only really useful for looking up well-known object image/spectra or object aliases)
@@ -47,6 +47,8 @@ from .lib_util import get_hdu_with, get_image_hdu, get_pix_res, skycoord_in_imag
 # TODO: Implement kwarg for choosing a non-default mirror/method for querying and retrieving data? This way
 #       if there are issues with one mirror/method, we can catch this in the calling query_online_archive function
 #       and retry with a different mirror/method before giving up on the survey-band combination entirely.
+
+Conf.timeout = 60*u.second   # Set a longer timeout for queries and downloads since some surveys can be slow to respond or have large files.
 
 
 def update_header(file: str, keyword: str, value: str, mode: str, clobber: bool=False):
@@ -181,7 +183,13 @@ class QueryTool:
                              cutout_size: u.Quantity=180*u.arcsec, keep_full_image: bool=False,
                              ignore_local_images: bool=False, **kwargs):
         """
-        Abstracted wrapper to query online archives using astroquery/pyvo.
+        Abstracted wrapper to query online archives using astroquery/pyvo. The arguments passed to the download function
+        must exist in the `download_function` signature for each survey in `self.online_archives`, but the exact
+        implementation of the download function can be customized for each survey as needed.
+        The download function is expected to handle the retrieval and saving of cutouts from the survey for the given
+        `coord` and `bands`, using `query_radius` for the cone search and `cutout_size` for the cutout size. The download
+        function should also handle any necessary fixes to the cutout images after retrieval, such as
+        adding required header keywords or applying necessary corrections.
         
         Parameters
         ----------
@@ -193,6 +201,12 @@ class QueryTool:
             List of the bands to retrieve. If `None`, then all the available bands for the survey are retrieved.
         `cutout_size` : `u.Quantity`
             Angular size of the cutout (radius) that the cone search is performed with and trimmed to.
+        `keep_full_image` : `bool`
+            Whether to keep the full image if the cutout is smaller than the full image. If `False`, then the
+            full image is remotely opened and operated on in memory but deleted after the cutout is made.
+        `ignore_local_images` : `bool`
+            Whether to ignore the presence of local images covering the source position and proceed with the
+            download and cutout as normal.
         """
         try:
             assert survey in self.online_archives.keys()
@@ -1423,8 +1437,8 @@ def get_TGSS():
     '''
     raise NotImplementedError
 
-def get_LoTSS(data_dir: str, coord: SkyCoord, query_radius: u.Quantity=3*u.arcmin,
-              cutout_size: u.Quantity=180*u.arcsec, low: bool=False):
+def get_LoTSS(data_dir: str, coord: SkyCoord, band: str='144MHz', query_radius: u.Quantity=3*u.arcmin,
+              cutout_size: u.Quantity=180*u.arcsec, low: bool=False, keep_full_image: bool=False):
     '''
     See https://lofar-surveys.org/cutout_api_details.html
     adapted from
@@ -1433,7 +1447,7 @@ def get_LoTSS(data_dir: str, coord: SkyCoord, query_radius: u.Quantity=3*u.arcmi
     used with astroquery.hips2fits to get cutouts.
     '''
     # Martin Hardcastle's cutout code
-    base = 'dr2'
+    base = 'dr3'
     url = 'https://lofar-surveys.org/'
     if low:
         page = base + '-low-cutout.fits'
@@ -1442,7 +1456,7 @@ def get_LoTSS(data_dir: str, coord: SkyCoord, query_radius: u.Quantity=3*u.arcmi
 
     if not os.path.exists(f'{data_dir}/Radio/LoTSS'): os.mkdir(f'{data_dir}/Radio/LoTSS')
     outname = f"{data_dir}/Radio/LoTSS/{coord.to_string(style='hmsdms', precision=2).replace(' ','')}_" \
-                + f"{'low_' if low else ''}LoTSS_{cutout_size.value}{cutout_size.unit}_cutout.fits"
+                + f"{'lowres_' if low else ''}_{band}_{cutout_size.value}{cutout_size.unit}_cutout.fits"
 
     r = requests.get(url + page, params={'pos': coord.to_string(style='hmsdms', precision=5, sep=':'),
                                        'size': cutout_size.to(u.arcmin).value}, stream=True)
