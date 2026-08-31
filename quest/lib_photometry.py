@@ -2,6 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from astropy.io import fits
 import photutils as photutils
+from photutils import aperture
 from astropy.wcs import WCS, FITSFixedWarning
 from astropy.coordinates import SkyCoord, Angle, CartesianRepresentation, ICRS, FK5
 from astropy.nddata import utils as nddata_utils
@@ -34,7 +35,7 @@ class PhotometryTool:
             try:
                 hdul = fits.open(data_entry.filepath)
                 im_hdu = get_image_hdu(hdul)
-                if not im_hdu: continue
+                if im_hdu is None: continue
 
                 astronomy_method = get_astronomy_method(hdul)
                 wl = get_wavelength(hdul)
@@ -96,7 +97,6 @@ class PhotometryTool:
         
         '''
         wcs = WCS(im_hdu.header, naxis=2)
-
         flux, local_bkg = self.get_phot(im_hdu.data, wcs, self.source.host_coord, ap_diameter,
                                         bkg_sigma_clip=bkg_sigma_clip)
         flux_jy = convert_flux(flux, astronomy_method, hdul, ap_diameter, band=band,
@@ -391,9 +391,9 @@ class PhotometryTool:
         subtracting the local background from the aperture flux. (NOTE: No flux conversion here)
         '''
         # x, y = wcs.world_to_pixel(coords)
-        ap = photutils.aperture.SkyCircularAperture(coords,r=ap_diameter/2)
+        ap = aperture.SkyCircularAperture(coords,r=ap_diameter/2)
         pix_ap = ap.to_pixel(wcs)
-        phot_table = photutils.aperture.aperture_photometry(data,pix_ap)
+        phot_table = aperture.aperture_photometry(data,pix_ap)
         local_bkg = get_mean_local_bkg(data,wcs,coords,1/2*ap_diameter,5/2*ap_diameter,
                                        bkg_sigma_clip=bkg_sigma_clip)
         flux = phot_table['aperture_sum'] - pix_ap.area*local_bkg

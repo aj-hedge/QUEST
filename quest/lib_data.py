@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from astropy.io import fits
 import photutils as photutils
+from photutils import segmentation
 from astropy.wcs import WCS, FITSFixedWarning
 from astropy.coordinates import SkyCoord, Angle, CartesianRepresentation, ICRS, FK5
 from astropy.nddata import utils as nddata_utils
@@ -158,7 +159,7 @@ class SourceEntry:
 
         if not skycoord_in_image(fits_file, coord):
             print(f"[WARNING]\tCoordinates {coord.to_string('hmsdms')} not contained in image WCS.")
-            return coord
+            return coord, 0*u.arcsec
 
         with fits.open(fits_file) as hdul:
             hdu = get_image_hdu(hdul)
@@ -177,8 +178,8 @@ class SourceEntry:
             data_const_bkg_subbed = hdu.data - mean
             threshold = 3.0 * std
         
-        # Run photutils.segmentation and deblend the sources, returning the coordinates of the closest source if within `max_separation`
-        finder = photutils.segmentation.SourceFinder(npixels=5, deblend=True, nlevels=32, contrast=0.001, progress_bar=False)
+        # Run segmentation and deblend the sources, returning the coordinates of the closest source if within `max_separation`
+        finder = segmentation.SourceFinder(npixels=5, deblend=True, nlevels=32, contrast=0.001, progress_bar=False)
         segment_map = finder(data_const_bkg_subbed, threshold=threshold)
 
         # Pick closest segment to centroid from table (without looping through)
@@ -188,7 +189,7 @@ class SourceEntry:
 
         if segment_map:
             # Make table from the deblended image
-            cat = photutils.segmentation.SourceCatalog(data_const_bkg_subbed, segment_map, wcs=wcs)
+            cat = segmentation.SourceCatalog(data_const_bkg_subbed, segment_map, wcs=wcs)
             tab = cat.to_table()
             source_spread = SkyCoord(tab['sky_centroid'], frame=frame)
 
@@ -199,15 +200,15 @@ class SourceEntry:
 
         if closest_source is None:
             # Smooth the image using a Gaussian kernel if no deblended source is found within the max_separation and repeat
-            kernel = photutils.segmentation.make_2dgaussian_kernel(5.0, size=11)
+            kernel = segmentation.make_2dgaussian_kernel(5.0, size=11)
             convolved_data = convolution.convolve(data_const_bkg_subbed, kernel)
 
-            finder = photutils.segmentation.SourceFinder(npixels=5, deblend=True, nlevels=32, contrast=0.001, progress_bar=False)
+            finder = segmentation.SourceFinder(npixels=5, deblend=True, nlevels=32, contrast=0.001, progress_bar=False)
             segment_map = finder(convolved_data, threshold=threshold)
 
             if segment_map:
                 # Make table from the deblended image
-                cat = photutils.segmentation.SourceCatalog(convolved_data, segment_map, wcs=wcs)
+                cat = segmentation.SourceCatalog(convolved_data, segment_map, wcs=wcs)
                 tab = cat.to_table()
                 source_spread = SkyCoord(tab['sky_centroid'], frame=frame)
 

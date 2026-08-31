@@ -5,6 +5,7 @@ import matplotlib.patches as patches
 import matplotlib.ticker as ticker
 from astropy.io import fits
 import photutils as photutils
+from photutils import aperture
 from astropy.wcs import WCS, FITSFixedWarning
 from astropy.coordinates import SkyCoord, Angle, CartesianRepresentation, ICRS, FK5
 from astropy.nddata import utils as nddata_utils
@@ -74,9 +75,9 @@ def overlay_aperture(ax: wcsaxes.WCSAxes, ap_pos: SkyCoord, ap_diameter: u.Quant
     '''
     Overlay a `SkyCircularAperture` onto the provided axes using position (`SkyCoord`) and diameter (`Quantity`) specifications.
     '''
-    ap = photutils.aperture.SkyCircularAperture(ap_pos,ap_diameter/2)
+    ap = aperture.SkyCircularAperture(ap_pos,ap_diameter/2)
     ap = ap.to_pixel(ax.wcs)
-    ap.plot(ax,**plot_args)
+    ap.plot(ax=ax,**plot_args)
     return ax
     
 def plot_overlays(phot: PhotometryTool, save_path: str=None, stamp_radius: u.Quantity=15*u.arcsec,
@@ -210,18 +211,47 @@ def _generate_stack_and_plot(se: SourceEntry, hdus: list[fits.ImageHDU], stack_n
             if radio_data.ndim > 2:
                 radio_data = radio_data[0,...]
 
-            radio_cutout = nddata_utils.Cutout2D(np.squeeze(radio_data), se.host_coord, cutout_size, wcs=radio_wcs)
+            try:
+                radio_cutout = nddata_utils.Cutout2D(np.squeeze(radio_data), se.host_coord, cutout_size, wcs=radio_wcs)
+            except nddata_utils.NoOverlapError as e:
+                print(f'[WARNING] {radio_path} does not overlap with the cutout region, skipping overlay.')
+                continue
             mask = ~np.isnan(radio_cutout.data)
             if np.all(mask == False):
                 continue
             rms = np.sqrt(np.nanmean(sigma_clip(radio_cutout.data[~np.isnan(radio_cutout.data)], sigma=3, maxiters=10)**2))
             levels = rms * 3 * kwargs.get('contour_step', np.sqrt(2))**np.arange(0, 3, 1)
+
+            # Guard against an astropy/matplotlib edge case: if no pixel in this cutout reaches the
+            # lowest contour level, ax.contour() returns a completely empty contour set, and astropy's
+            # WCSWorld2PixelTransform then raises "Expected 2 world coordinates, got 0" instead of
+            # silently drawing nothing. Skip the draw explicitly rather than relying on that transform
+            # to handle the degenerate (zero-path) case.
+            if np.nanmax(radio_cutout.data) < np.min(levels):
+                print(f'[INFO] {radio_path}: peak flux ({np.nanmax(radio_cutout.data):.3g}) is below the '
+                      f'lowest contour level ({np.min(levels):.3g}) in this cutout, skipping contour overlay.')
+                continue
+
             contour_colour = next(contour_colour_iter)
-            ax.contour(radio_cutout.data, levels=levels, transform=ax.get_transform(radio_cutout.wcs),
-                        colors=contour_colour, alpha=0.6)
+            try:
+                ax.contour(radio_cutout.data, levels=levels, transform=ax.get_transform(radio_cutout.wcs),
+                            colors=contour_colour, alpha=0.6)
+            except ValueError as e:
+                # Extra safety net for other astropy-version-dependent empty-contour edge cases.
+                print(f'[WARNING] Could not draw contours for {radio_path}, skipping: {e}')
+                continue
             if kwargs.get('add_beam', False) == True:
-                wcsaxes.add_beam(ax,header=radio_hdu.header,corner=next(beam_pos_iter),frame=False,
-                                    edgecolor=contour_colour,hatch='////',fill=True,facecolor='white')
+                # wcsaxes.add_beam cannot handle missing BPA in case of circular restoring beam, so we forcfully
+                # provide all beam arguments instead of the header if we find that BPA is not present.
+                if not radio_hdu.header.get('BPA'):
+                    angle = 0*u.deg
+                    bmaj = radio_hdu.header.get('BMAJ') * u.deg # assuming degrees here...
+                    bmin = radio_hdu.header.get('BMIN') * u.deg # assuming degrees here...
+                    wcsaxes.add_beam(ax=ax, major=bmaj, minor=bmin, angle=angle, corner=next(beam_pos_iter), frame=False,
+                                        edgecolor=contour_colour, hatch='////', fill=True, facecolor='white')
+                else:
+                    wcsaxes.add_beam(ax=ax,header=radio_hdu.header, corner=next(beam_pos_iter), frame=False,
+                                        edgecolor=contour_colour, hatch='////', fill=True, facecolor='white')
             if radio_cutout:    # QuadContourSet (from ax.contour call) does not support labels directly
                 handles.append(patches.Patch(color=contour_colour,label=f"{instrument}"))
             
@@ -348,7 +378,7 @@ def plot_multiwl_stamps(phot: PhotometryTool, cutout_size: u.Quantity=10*u.arcse
             ax.text(0.05, 0.90, summary['display_name'], color='white', fontsize='x-large', fontweight='heavy',
                     bbox=dict(boxstyle="round", ec='white', fc='black'), transform=ax.transAxes)
         
-        overlay_aperture(ax, ap_pos=summary['skycoord'], ap_diameter=kwargs.get('ap_diameter', 2*u.arcsec), color='red', lw=1.5)
+        overlay_aperture(ax=ax, ap_pos=summary['skycoord'], ap_diameter=kwargs.get('ap_diameter', 2*u.arcsec), color='red', lw=1.5)
         
         ax.plot(*stamp.wcs.world_to_pixel(summary['radio_coord']), marker='X', mfc='yellow', mec='black', ms=8, mew=0.7,
                 transform=ax.get_transform(stamp.wcs))
